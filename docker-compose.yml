@@ -1,0 +1,114 @@
+version: '3.8'
+
+services:
+  waynex-ai:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=production
+      - PYTHONUNBUFFERED=1
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://waynex_user:waynex2024@postgres:5433/waynex_ai
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - postgres
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./logs:/app/logs
+    networks:
+      - waynex-network
+
+  # Redis için
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass redis2024
+    volumes:
+      - redis_data:/data
+    networks:
+      - waynex-network
+
+  # PostgreSQL için (farklı port)
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: waynex_ai
+      POSTGRES_USER: waynex_user
+      POSTGRES_PASSWORD: waynex2024
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: unless-stopped
+    networks:
+      - waynex-network
+
+  # Celery Worker
+  celery-worker:
+    build: .
+    command: celery -A app.celery worker --loglevel=info --concurrency=4
+    environment:
+      - ENVIRONMENT=production
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://waynex_user:waynex2024@postgres:5433/waynex_ai
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    depends_on:
+      - redis
+      - postgres
+      - waynex-ai
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./logs:/app/logs
+    networks:
+      - waynex-network
+
+  # Celery Beat
+  celery-beat:
+    build: .
+    command: celery -A app.celery beat --loglevel=info
+    environment:
+      - ENVIRONMENT=production
+      - CELERY_BROKER_URL=redis://redis:6379/1
+    depends_on:
+      - redis
+      - celery-worker
+    volumes:
+      - ./data:/app/data
+    networks:
+      - waynex-network
+
+  # Flower Monitoring
+  flower:
+    build: .
+    command: celery -A app.celery flower --port=5555
+    ports:
+      - "5555:5555"
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/1
+    depends_on:
+      - celery-worker
+    networks:
+      - waynex-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  waynex-network:
+    driver: bridge
